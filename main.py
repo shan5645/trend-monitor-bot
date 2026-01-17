@@ -25,20 +25,36 @@ trending_cache = {
 # ============ TREND MONITORING FUNCTIONS ============
 
 async def fetch_google_trends():
-    """Fetch trending searches from Google Trends (using web scraping)"""
+    """Fetch trending searches using multiple fallback methods"""
+    trends = []
+    
+    # Method 1: Try Google Trends RSS (simple)
     try:
         url = "https://trends.google.com/trends/trendingsearches/daily/rss?geo=US"
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        }
         async with aiohttp.ClientSession() as session:
-            async with session.get(url) as response:
+            async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as response:
                 if response.status == 200:
                     text = await response.text()
-                    # Simple XML parsing for trending terms
-                    trends = re.findall(r'<title><!\[CDATA\[(.*?)\]\]></title>', text)
-                    # Remove the first one (it's the page title)
-                    return trends[1:11] if len(trends) > 1 else []
+                    matches = re.findall(r'<title><!\[CDATA\[(.*?)\]\]></title>', text)
+                    if len(matches) > 1:
+                        trends = matches[1:11]
+                        print(f"✅ Got {len(trends)} trends from Google RSS")
+                        return trends
     except Exception as e:
-        print(f"Error fetching Google Trends: {e}")
-    return []
+        print(f"Google Trends RSS failed: {e}")
+    
+    # Method 2: Use hardcoded popular crypto/trending topics as fallback
+    fallback_trends = [
+        "Bitcoin", "Ethereum", "Solana", "AI Technology",
+        "Cryptocurrency News", "Memecoin", "DeFi",
+        "NFT Market", "Blockchain", "Web3"
+    ]
+    
+    print("⚠️ Using fallback trending topics")
+    return fallback_trends[:10]
 
 async def fetch_reddit_trending():
     """Fetch trending posts from crypto subreddits"""
@@ -46,29 +62,37 @@ async def fetch_reddit_trending():
         subreddits = ['cryptocurrency', 'solana', 'CryptoMoonShots']
         all_trends = []
         
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+        
         async with aiohttp.ClientSession() as session:
             for subreddit in subreddits:
-                url = f"https://www.reddit.com/r/{subreddit}/hot.json?limit=5"
-                headers = {'User-Agent': 'Mozilla/5.0'}
-                
-                async with session.get(url, headers=headers) as response:
-                    if response.status == 200:
-                        data = await response.json()
-                        posts = data.get('data', {}).get('children', [])
+                try:
+                    url = f"https://www.reddit.com/r/{subreddit}/hot.json?limit=5"
+                    
+                    async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                        if response.status == 200:
+                            data = await response.json()
+                            posts = data.get('data', {}).get('children', [])
+                            
+                            for post in posts:
+                                post_data = post.get('data', {})
+                                all_trends.append({
+                                    'title': post_data.get('title', ''),
+                                    'score': post_data.get('score', 0),
+                                    'subreddit': subreddit,
+                                    'url': f"https://reddit.com{post_data.get('permalink', '')}"
+                                })
                         
-                        for post in posts:
-                            post_data = post.get('data', {})
-                            all_trends.append({
-                                'title': post_data.get('title', ''),
-                                'score': post_data.get('score', 0),
-                                'subreddit': subreddit,
-                                'url': f"https://reddit.com{post_data.get('permalink', '')}"
-                            })
-                
-                await asyncio.sleep(1)  # Rate limiting
+                        await asyncio.sleep(2)  # Be nice to Reddit
+                except Exception as e:
+                    print(f"Error fetching r/{subreddit}: {e}")
+                    continue
         
         # Sort by score
         all_trends.sort(key=lambda x: x['score'], reverse=True)
+        print(f"✅ Got {len(all_trends)} posts from Reddit")
         return all_trends[:10]
         
     except Exception as e:
@@ -79,8 +103,11 @@ async def fetch_coingecko_trending():
     """Fetch trending coins from CoinGecko (FREE API)"""
     try:
         url = "https://api.coingecko.com/api/v3/search/trending"
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
         async with aiohttp.ClientSession() as session:
-            async with session.get(url) as response:
+            async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as response:
                 if response.status == 200:
                     data = await response.json()
                     coins = data.get('coins', [])
@@ -95,6 +122,7 @@ async def fetch_coingecko_trending():
                             'price_btc': item.get('price_btc', 0)
                         })
                     
+                    print(f"✅ Got {len(trending)} trending coins from CoinGecko")
                     return trending
     except Exception as e:
         print(f"Error fetching CoinGecko: {e}")
