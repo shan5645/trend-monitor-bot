@@ -11,7 +11,7 @@ import json
 # ============ CONFIGURATION ============
 TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN', 'YOUR_BOT_TOKEN_HERE')
 
-# Store user preferences
+# Store tracked wallets in memory
 user_preferences = {}
 
 # Trending data cache
@@ -19,10 +19,89 @@ trending_cache = {
     'google_trends': [],
     'reddit_trending': [],
     'coingecko_trending': [],
+    'youtube_trending': [],
+    'twitter_trends': [],
+    'crypto_news': [],
     'last_update': None
 }
 
 # ============ TREND MONITORING FUNCTIONS ============
+
+async def fetch_youtube_trending():
+    """Fetch trending videos from YouTube (no API key needed)"""
+    try:
+        # YouTube trending page scraping
+        url = "https://www.youtube.com/feed/trending"
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                if response.status == 200:
+                    text = await response.text()
+                    # Extract video titles (simplified)
+                    titles = re.findall(r'"title":{"runs":\[{"text":"([^"]+)"}\]', text)
+                    # Filter out YouTube UI text and get unique titles
+                    trending = [t for t in titles if len(t) > 10 and not t.startswith('YouTube')][:15]
+                    print(f"✅ Got {len(trending)} trending videos from YouTube")
+                    return trending
+    except Exception as e:
+        print(f"YouTube trending failed: {e}")
+    return []
+
+async def fetch_twitter_alternative():
+    """Fetch trending topics using Nitter (Twitter mirror - FREE)"""
+    try:
+        # Nitter instances are free Twitter mirrors
+        nitter_instances = [
+            "https://nitter.net",
+            "https://nitter.privacydev.net",
+            "https://nitter.poast.org"
+        ]
+        
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+        
+        for instance in nitter_instances:
+            try:
+                url = f"{instance}/explore"
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                        if response.status == 200:
+                            text = await response.text()
+                            # Extract trending topics
+                            trends = re.findall(r'<span class="trend-name">([^<]+)</span>', text)
+                            if trends:
+                                print(f"✅ Got {len(trends)} trends from Twitter (via {instance})")
+                                return trends[:10]
+            except Exception as e:
+                print(f"Nitter instance {instance} failed: {e}")
+                continue
+    except Exception as e:
+        print(f"Twitter alternative failed: {e}")
+    return []
+
+async def fetch_crypto_news():
+    """Fetch latest crypto news headlines (FREE)"""
+    try:
+        # CoinTelegraph RSS feed
+        url = "https://cointelegraph.com/rss"
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                if response.status == 200:
+                    text = await response.text()
+                    # Extract titles
+                    titles = re.findall(r'<title><!\[CDATA\[(.*?)\]\]></title>', text)
+                    if len(titles) > 1:
+                        print(f"✅ Got {len(titles)-1} crypto news headlines")
+                        return titles[1:11]  # Skip first (feed title)
+    except Exception as e:
+        print(f"Crypto news failed: {e}")
+    return []
 
 async def fetch_google_trends():
     """Fetch trending searches using multiple fallback methods"""
@@ -130,18 +209,36 @@ async def fetch_coingecko_trending():
 
 async def update_trending_data():
     """Update all trending data from free sources"""
-    print("📊 Updating trending data...")
+    print("📊 Updating trending data from ALL sources...")
     
-    google_trends = await fetch_google_trends()
-    reddit_trends = await fetch_reddit_trending()
-    coingecko_trends = await fetch_coingecko_trending()
+    # Fetch all sources in parallel
+    results = await asyncio.gather(
+        fetch_google_trends(),
+        fetch_reddit_trending(),
+        fetch_coingecko_trending(),
+        fetch_youtube_trending(),
+        fetch_twitter_alternative(),
+        fetch_crypto_news(),
+        return_exceptions=True
+    )
+    
+    google_trends = results[0] if not isinstance(results[0], Exception) else []
+    reddit_trends = results[1] if not isinstance(results[1], Exception) else []
+    coingecko_trends = results[2] if not isinstance(results[2], Exception) else []
+    youtube_trends = results[3] if not isinstance(results[3], Exception) else []
+    twitter_trends = results[4] if not isinstance(results[4], Exception) else []
+    crypto_news = results[5] if not isinstance(results[5], Exception) else []
     
     trending_cache['google_trends'] = google_trends
     trending_cache['reddit_trending'] = reddit_trends
     trending_cache['coingecko_trending'] = coingecko_trends
+    trending_cache['youtube_trending'] = youtube_trends
+    trending_cache['twitter_trends'] = twitter_trends
+    trending_cache['crypto_news'] = crypto_news
     trending_cache['last_update'] = datetime.now()
     
-    print(f"✅ Updated: {len(google_trends)} Google trends, {len(reddit_trends)} Reddit posts, {len(coingecko_trends)} trending coins")
+    total = len(google_trends) + len(reddit_trends) + len(coingecko_trends) + len(youtube_trends) + len(twitter_trends) + len(crypto_news)
+    print(f"✅ Total data points collected: {total}")
 
 # ============ COIN IDEA GENERATOR ============
 
@@ -204,18 +301,25 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🤖 *Trend Monitor & Coin Generator Bot*\n\n"
         "I monitor trending topics from FREE sources and generate memecoin ideas!\n\n"
         "*Commands:*\n"
-        "/trends - Show current trending topics\n"
-        "/generate - Generate coin ideas from trends\n"
+        "/trends - Show Google/general trends\n"
+        "/twitter - Show Twitter/X trending topics\n"
+        "/youtube - Show YouTube trending videos\n"
         "/reddit - Show trending Reddit posts\n"
         "/coins - Show trending coins (CoinGecko)\n"
+        "/news - Show latest crypto news\n"
+        "/all - Show ALL trends from all sources\n"
+        "/generate - Generate coin ideas from trends\n"
         "/auto `on/off` - Auto-notify for new trends\n"
         "/refresh - Manually refresh trend data\n"
         "/help - Show this message\n\n"
         "*Data Sources (100% FREE):*\n"
         "📊 Google Trends\n"
-        "🔥 Reddit (r/cryptocurrency, r/solana)\n"
-        "💎 CoinGecko Trending\n\n"
-        "💡 *Tip:* I update trends every 30 minutes automatically!"
+        "🐦 Twitter/X (via Nitter)\n"
+        "📺 YouTube Trending\n"
+        "🔥 Reddit Crypto Subs\n"
+        "💎 CoinGecko Trending\n"
+        "📰 Crypto News (CoinTelegraph)\n\n"
+        "💡 *Tip:* I update all sources every 30 minutes!"
     )
     await update.message.reply_text(welcome, parse_mode='Markdown')
 
@@ -282,26 +386,126 @@ async def show_coins(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text(message, parse_mode='Markdown')
 
+async def show_twitter(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show Twitter/X trending topics"""
+    if not trending_cache['twitter_trends']:
+        await update.message.reply_text("⏳ Fetching Twitter trends...")
+        await update_trending_data()
+    
+    trends = trending_cache['twitter_trends']
+    
+    if not trends:
+        await update.message.reply_text("❌ Twitter trends unavailable. Try /refresh in a moment.")
+        return
+    
+    message = f"🐦 *Trending on Twitter/X*\n\n"
+    
+    for i, trend in enumerate(trends[:10], 1):
+        message += f"{i}. {trend}\n"
+    
+    await update.message.reply_text(message, parse_mode='Markdown')
+
+async def show_youtube(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show YouTube trending videos"""
+    if not trending_cache['youtube_trending']:
+        await update.message.reply_text("⏳ Fetching YouTube trends...")
+        await update_trending_data()
+    
+    trends = trending_cache['youtube_trending']
+    
+    if not trends:
+        await update.message.reply_text("❌ YouTube trends unavailable.")
+        return
+    
+    message = f"📺 *Trending on YouTube*\n\n"
+    
+    for i, trend in enumerate(trends[:10], 1):
+        message += f"{i}. {trend}\n"
+    
+    await update.message.reply_text(message, parse_mode='Markdown')
+
+async def show_news(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show latest crypto news"""
+    if not trending_cache['crypto_news']:
+        await update.message.reply_text("⏳ Fetching crypto news...")
+        await update_trending_data()
+    
+    news = trending_cache['crypto_news']
+    
+    if not news:
+        await update.message.reply_text("❌ News unavailable.")
+        return
+    
+    message = f"📰 *Latest Crypto News*\n\n"
+    
+    for i, headline in enumerate(news[:8], 1):
+        message += f"{i}. {headline}\n\n"
+    
+    await update.message.reply_text(message, parse_mode='Markdown')
+
+async def show_all_trends(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show all trends from all sources"""
+    if not any([trending_cache['google_trends'], trending_cache['reddit_trending'], 
+                trending_cache['coingecko_trending'], trending_cache['youtube_trending'],
+                trending_cache['twitter_trends'], trending_cache['crypto_news']]):
+        await update.message.reply_text("⏳ Fetching ALL trends...")
+        await update_trending_data()
+    
+    message = f"🌐 *ALL TRENDING DATA*\n\n"
+    
+    if trending_cache['twitter_trends']:
+        message += f"🐦 *Twitter:* {', '.join(trending_cache['twitter_trends'][:3])}\n\n"
+    
+    if trending_cache['youtube_trending']:
+        message += f"📺 *YouTube:* {trending_cache['youtube_trending'][0][:50]}...\n\n"
+    
+    if trending_cache['google_trends']:
+        message += f"📊 *Google:* {', '.join(trending_cache['google_trends'][:3])}\n\n"
+    
+    if trending_cache['reddit_trending']:
+        top_reddit = trending_cache['reddit_trending'][0]
+        message += f"🔥 *Reddit:* {top_reddit['title'][:50]}... ({top_reddit['score']}↑)\n\n"
+    
+    if trending_cache['coingecko_trending']:
+        coins = trending_cache['coingecko_trending'][:3]
+        coin_names = ', '.join([c['name'] for c in coins])
+        message += f"💎 *Coins:* {coin_names}\n\n"
+    
+    if trending_cache['crypto_news']:
+        message += f"📰 *News:* {trending_cache['crypto_news'][0][:60]}...\n\n"
+    
+    message += "Use specific commands for more details!"
+    
+    await update.message.reply_text(message, parse_mode='Markdown')
+
 async def generate_ideas(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Generate coin ideas from current trends"""
-    if not trending_cache['google_trends'] and not trending_cache['reddit_trending']:
+    if not any([trending_cache['google_trends'], trending_cache['reddit_trending'],
+                trending_cache['youtube_trending'], trending_cache['twitter_trends']]):
         await update.message.reply_text("⏳ Fetching trends first...")
         await update_trending_data()
     
-    await update.message.reply_text("🎨 Generating coin ideas...")
+    await update.message.reply_text("🎨 Generating coin ideas from ALL sources...")
     
     concepts = []
     
+    # Generate from Twitter
+    for trend in trending_cache['twitter_trends'][:2]:
+        concepts.append(generate_coin_concept(trend, '🐦 Twitter'))
+    
+    # Generate from YouTube
+    for trend in trending_cache['youtube_trending'][:2]:
+        concepts.append(generate_coin_concept(trend, '📺 YouTube'))
+    
     # Generate from Google trends
-    for trend in trending_cache['google_trends'][:3]:
-        concepts.append(generate_coin_concept(trend, 'Google Trends'))
+    for trend in trending_cache['google_trends'][:2]:
+        concepts.append(generate_coin_concept(trend, '📊 Google'))
     
     # Generate from Reddit
-    for post in trending_cache['reddit_trending'][:2]:
-        # Extract key words from title
+    for post in trending_cache['reddit_trending'][:1]:
         title_words = post['title'].split()[:3]
         trend_text = ' '.join(title_words)
-        concepts.append(generate_coin_concept(trend_text, 'Reddit'))
+        concepts.append(generate_coin_concept(trend_text, '🔥 Reddit'))
     
     if not concepts:
         await update.message.reply_text("❌ No trends available to generate ideas.")
@@ -309,10 +513,10 @@ async def generate_ideas(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     message = "🚀 *Generated Coin Concepts*\n\n"
     
-    for i, concept in enumerate(concepts[:5], 1):
+    for i, concept in enumerate(concepts[:7], 1):
         message += f"*{i}. {concept['name']}* (${concept['ticker']})\n"
         message += f"📝 {concept['description']}\n"
-        message += f"📊 Based on: {concept['trend']}\n"
+        message += f"📊 Based on: {concept['trend'][:40]}...\n"
         message += f"🔍 Source: {concept['source']}\n\n"
     
     message += "⚠️ *Next Steps:*\n"
@@ -414,6 +618,10 @@ def main():
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", start))
     application.add_handler(CommandHandler("trends", show_trends))
+    application.add_handler(CommandHandler("twitter", show_twitter))
+    application.add_handler(CommandHandler("youtube", show_youtube))
+    application.add_handler(CommandHandler("news", show_news))
+    application.add_handler(CommandHandler("all", show_all_trends))
     application.add_handler(CommandHandler("generate", generate_ideas))
     application.add_handler(CommandHandler("reddit", show_reddit))
     application.add_handler(CommandHandler("coins", show_coins))
@@ -423,13 +631,15 @@ def main():
     # Set bot commands menu
     async def post_init(app: Application):
         commands = [
-            BotCommand("trends", "📊 Show trending topics"),
+            BotCommand("trends", "📊 Google/general trends"),
+            BotCommand("twitter", "🐦 Twitter trending"),
+            BotCommand("youtube", "📺 YouTube trending"),
+            BotCommand("all", "🌐 All sources at once"),
             BotCommand("generate", "🎨 Generate coin ideas"),
-            BotCommand("reddit", "🔥 Trending Reddit posts"),
+            BotCommand("reddit", "🔥 Reddit posts"),
             BotCommand("coins", "💎 Trending coins"),
-            BotCommand("auto", "🔔 Toggle auto-notifications"),
+            BotCommand("news", "📰 Crypto news"),
             BotCommand("refresh", "🔄 Refresh data"),
-            BotCommand("help", "❓ Help"),
         ]
         await app.bot.set_my_commands(commands)
         
